@@ -1,6 +1,6 @@
 {
   "base_sha": "2817bd71edc5b8fb952127a5d6bcd52630c16f30",
-  "harness_sha": "abc8bd5234a7d0c8319c24c2b524e51cab30dba6",
+  "harness_sha": "98dd9dad3f150af881c242b094fd4385e346ce3b",
   "kind": "signthos_grain_h_exact_head_qualification",
   "outcomes": {
     "artifact": "success",
@@ -22,7 +22,7 @@
   },
   "qualification": "FAIL",
   "run_attempt": 1,
-  "run_id": 33808492132,
+  "run_id": 33809245365,
   "schema_version": 1,
-  "target_sha": "ace00c5bb9bcc923c119e3fb6088965e1b916cce"
+  "target_sha": "af4acf1f1c776cc41e294de68e7c810be58ebf6c"
 }
