@@ -1,0 +1,67 @@
+name: Signthos Grain H Cross-Target Compile
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - TARGET_GRAIN_H_SHA
+      - .github/workflows/signthos-grain-h-cross-target.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cross-target:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout verification harness
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Resolve target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$(tr -d '[:space:]' < TARGET_GRAIN_H_SHA)"
+          test "${#target}" -eq 40
+          case "$target" in
+            *[!0-9a-f]*) exit 2 ;;
+          esac
+          echo "sha=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust 1.85.0 cross targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup default 1.85.0
+          rustup target add x86_64-apple-darwin x86_64-pc-windows-gnu
+          rustc --version
+          cargo --version
+
+      - name: Checkout exact Signthos target
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/TheHalfMoon/Signthos.git signthos
+          git -C signthos fetch --depth=1 origin "$TARGET_SHA"
+          git -C signthos checkout --detach "$TARGET_SHA"
+          test "$(git -C signthos rev-parse HEAD)" = "$TARGET_SHA"
+
+      - name: Compile macOS target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo check --all-targets --all-features --locked --target x86_64-apple-darwin
+
+      - name: Compile Windows target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo check --all-targets --all-features --locked --target x86_64-pc-windows-gnu
