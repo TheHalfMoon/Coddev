@@ -1,4 +1,4 @@
-name: Signthos Grain C Format Export
+name: Signthos Grain C Diagnostic Export
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  export:
+  diagnose:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -30,14 +30,14 @@ jobs:
           esac
           echo "sha=$target" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rustfmt 1.85.0
+      - name: Install Rust 1.85.0
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.0 --profile minimal --component rustfmt
+          rustup toolchain install 1.85.0 --profile minimal
           rustup default 1.85.0
 
-      - name: Format disposable exact-target checkout
+      - name: Run focused tests with retained output
         shell: bash
         env:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
@@ -47,17 +47,27 @@ jobs:
           git -C signthos fetch --depth=1 origin "$TARGET_SHA"
           git -C signthos checkout --detach "$TARGET_SHA"
           test "$(git -C signthos rev-parse HEAD)" = "$TARGET_SHA"
-          cargo fmt --manifest-path signthos/tools/provenance/Cargo.toml --all
-          mkdir -p formatted
-          cp signthos/tools/provenance/src/lib.rs formatted/lib.rs
-          cp signthos/tools/provenance/src/main.rs formatted/main.rs
-          cp signthos/tools/provenance/src/component_review_alignment.rs formatted/component_review_alignment.rs
-          git -C signthos diff -- tools/provenance/src/lib.rs tools/provenance/src/main.rs tools/provenance/src/component_review_alignment.rs > formatted/rustfmt.diff
+          mkdir -p diagnostic
+          set +e
+          (
+            cd signthos/tools/provenance
+            cargo test --locked --test fixtures
+            rc1=$?
+            cargo test --locked --test regressions
+            rc2=$?
+            cargo test --locked --test cli
+            rc3=$?
+            printf '\nFIXTURES_RC=%s\nREGRESSIONS_RC=%s\nCLI_RC=%s\n' "$rc1" "$rc2" "$rc3"
+            exit $(( rc1 || rc2 || rc3 ))
+          ) > diagnostic/focused-tests.txt 2>&1
+          rc=$?
+          echo "$rc" > diagnostic/exit-code.txt
+          exit 0
 
-      - name: Upload formatted candidate
+      - name: Upload diagnostic evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: signthos-grain-c-rustfmt-candidate
-          path: formatted/
+          name: signthos-grain-c-focused-diagnostic
+          path: diagnostic/
           if-no-files-found: error
           retention-days: 1
