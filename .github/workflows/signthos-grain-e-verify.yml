@@ -119,6 +119,8 @@ jobs:
       - name: Prove dependency graph unchanged
         id: lock
         shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
           git -C signthos diff --exit-code "$BASE_SHA..$TARGET_SHA" -- tools/provenance/Cargo.toml tools/provenance/Cargo.lock
