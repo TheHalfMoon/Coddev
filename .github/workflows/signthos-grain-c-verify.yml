@@ -92,20 +92,84 @@ jobs:
           for package in sorted(after['package'], key=lambda p: (p['name'], p['version'])):
               print(package['name'], package['version'], package.get('checksum', '-'), package.get('source', '-'))
           PY
-          echo '--- GENERATED CARGO.LOCK ---'
-          cat Cargo.lock
-          echo '--- CARGO TREE ---'
-          cat /tmp/tree.txt
 
-      - name: Apply Rustfmt candidate and capture patch
+      - name: Apply candidate repairs and Rustfmt
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          alignment = Path('signthos/tools/provenance/src/alignment.rs')
+          text = alignment.read_text()
+          old = '''            match license.get("classification").and_then(Value::as_str) {
+                Some("spdx") => bounded_string(
+                    path,
+                    license,
+                    "spdx",
+                    &format!("{base}.license.spdx"),
+                    1,
+                    256,
+                    report,
+                ),
+                _ => {}
+            }
+'''
+          new = '''            if let Some("spdx") = license.get("classification").and_then(Value::as_str) {
+                bounded_string(
+                    path,
+                    license,
+                    "spdx",
+                    &format!("{base}.license.spdx"),
+                    1,
+                    256,
+                    report,
+                );
+            }
+'''
+          assert old in text
+          alignment.write_text(text.replace(old, new, 1))
+
+          validation = Path('signthos/tools/provenance/src/validation.rs')
+          text = validation.read_text()
+          text = text.replace(
+              'use std::collections::HashSet;\n',
+              'use std::collections::HashSet;\nuse std::fmt::Write as _;\n',
+              1,
+          )
+          old = '''    pub fn render_text(&self) -> String {
+        self.diagnostics
+            .iter()
+            .map(|diagnostic| {
+                format!(
+                    "{}: {} [{}]: {}\\n",
+                    diagnostic.path, diagnostic.code, diagnostic.field, diagnostic.message
+                )
+            })
+            .collect()
+    }
+'''
+          new = '''    pub fn render_text(&self) -> String {
+        let mut output = String::new();
+        for diagnostic in &self.diagnostics {
+            writeln!(
+                output,
+                "{}: {} [{}]: {}",
+                diagnostic.path, diagnostic.code, diagnostic.field, diagnostic.message
+            )
+            .expect("writing to a String cannot fail");
+        }
+        output
+    }
+'''
+          assert old in text
+          validation.write_text(text.replace(old, new, 1))
+          PY
           cd signthos/tools/provenance
           cargo fmt
           cargo fmt --check
           cd ../..
-          git diff -- tools/provenance/src tools/provenance/tests | tee /tmp/rustfmt.patch
+          git diff -- tools/provenance/src tools/provenance/tests > /tmp/candidate.patch
 
       - name: Clippy gate
         shell: bash
@@ -130,18 +194,18 @@ jobs:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
-          mkdir -p evidence
+          mkdir -p evidence/candidate/tools/provenance/src evidence/candidate/tools/provenance/tests
           printf 'target_sha=%s\n' "$TARGET_SHA" > evidence/environment.txt
           rustc --version >> evidence/environment.txt 2>&1 || true
           cargo --version >> evidence/environment.txt 2>&1 || true
           rustfmt --version >> evidence/environment.txt 2>&1 || true
           cargo clippy --version >> evidence/environment.txt 2>&1 || true
-          if test -f signthos/tools/provenance/Cargo.lock; then
-            cp signthos/tools/provenance/Cargo.lock evidence/Cargo.lock.generated
-          fi
+          if test -f signthos/tools/provenance/Cargo.lock; then cp signthos/tools/provenance/Cargo.lock evidence/Cargo.lock.generated; fi
           if test -f /tmp/metadata.json; then cp /tmp/metadata.json evidence/metadata.json; fi
           if test -f /tmp/tree.txt; then cp /tmp/tree.txt evidence/tree.txt; fi
-          if test -f /tmp/rustfmt.patch; then cp /tmp/rustfmt.patch evidence/rustfmt.patch; fi
+          if test -f /tmp/candidate.patch; then cp /tmp/candidate.patch evidence/candidate.patch; fi
+          cp signthos/tools/provenance/src/*.rs evidence/candidate/tools/provenance/src/ || true
+          cp signthos/tools/provenance/tests/*.rs evidence/candidate/tools/provenance/tests/ || true
 
       - name: Upload evidence
         if: always()
