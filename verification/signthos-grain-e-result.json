@@ -1,27 +1,27 @@
 {
   "base_sha": "79de3dcb5e1f44cb6bf3a2f20e9e1188435a9a1e",
-  "harness_sha": "895493f6bb202acd2bb416156cfdcf5321de1fe9",
+  "harness_sha": "8a0dd48dd0ac76c32a5bc615ef9078abe6666d90",
   "kind": "signthos_grain_e_exact_head_qualification",
   "outcomes": {
     "artifact": "success",
-    "clippy": "skipped",
-    "doctests": "skipped",
+    "clippy": "success",
+    "doctests": "success",
     "evidence": "success",
-    "fmt": "failure",
-    "focused": "skipped",
+    "fmt": "success",
+    "focused": "success",
     "lock": "success",
-    "offline": "skipped",
+    "offline": "success",
     "reconcile": "success",
     "rust": "success",
     "signthos": "success",
     "source_boundary": "success",
     "surface": "success",
     "target": "success",
-    "tests": "skipped"
+    "tests": "success"
   },
-  "qualification": "FAIL",
+  "qualification": "PASS",
   "run_attempt": 1,
-  "run_id": 33790194265,
+  "run_id": 33792905354,
   "schema_version": 1,
-  "target_sha": "932d32efcd7a590d2bd7b7bb4edea6b7d89feebb"
+  "target_sha": "c922bf8d5569d4ae35853fc96df83b46c7bb4a3b"
 }
