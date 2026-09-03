@@ -144,7 +144,7 @@ jobs:
           metadata_external = {
               (p['name'], p['version'])
               for p in metadata['packages']
-              if p.get('source', '').startswith('registry+')
+              if (p.get('source') or '').startswith('registry+')
           }
           assert metadata_external == set(external), (metadata_external, set(external))
 
