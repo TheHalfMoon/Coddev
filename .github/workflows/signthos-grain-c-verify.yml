@@ -97,12 +97,15 @@ jobs:
           echo '--- CARGO TREE ---'
           cat /tmp/tree.txt
 
-      - name: Format gate
+      - name: Apply Rustfmt candidate and capture patch
         shell: bash
         run: |
           set -euo pipefail
           cd signthos/tools/provenance
+          cargo fmt
           cargo fmt --check
+          cd ../..
+          git diff -- tools/provenance/src tools/provenance/tests | tee /tmp/rustfmt.patch
 
       - name: Clippy gate
         shell: bash
@@ -138,6 +141,7 @@ jobs:
           fi
           if test -f /tmp/metadata.json; then cp /tmp/metadata.json evidence/metadata.json; fi
           if test -f /tmp/tree.txt; then cp /tmp/tree.txt evidence/tree.txt; fi
+          if test -f /tmp/rustfmt.patch; then cp /tmp/rustfmt.patch evidence/rustfmt.patch; fi
 
       - name: Upload evidence
         if: always()
