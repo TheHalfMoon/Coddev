@@ -1,0 +1,296 @@
+name: Signthos Grain H Verification
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - TARGET_GRAIN_H_SHA
+      - .github/workflows/signthos-grain-h-verify.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: signthos-grain-h-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_SHA: 2817bd71edc5b8fb952127a5d6bcd52630c16f30
+    steps:
+      - name: Checkout verification harness
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Resolve exact Signthos target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$(tr -d '[:space:]' < TARGET_GRAIN_H_SHA)"
+          test "${#target}" -eq 40
+          case "$target" in
+            *[!0-9a-f]*) echo "TARGET_GRAIN_H_SHA must be a lowercase 40-hex commit" >&2; exit 2 ;;
+          esac
+          echo "sha=$target" >> "$GITHUB_OUTPUT"
+          echo "TARGET_SHA=$target"
+          echo "BASE_SHA=$BASE_SHA"
+
+      - name: Install Rust 1.85.0
+        id: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.85.0
+          rustc --version
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+
+      - name: Checkout exact Signthos commit and canonical base
+        id: signthos
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/TheHalfMoon/Signthos.git signthos
+          git -C signthos fetch --depth=1 origin "$TARGET_SHA"
+          git -C signthos fetch --depth=1 origin "$BASE_SHA"
+          git -C signthos checkout --detach "$TARGET_SHA"
+          test "$(git -C signthos rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git -C signthos rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
+
+      - name: Exact Grain H change-surface proof
+        id: surface
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git -C signthos diff --check "$BASE_SHA..$TARGET_SHA"
+          git -C signthos diff --name-only "$BASE_SHA..$TARGET_SHA" | tee /tmp/changed-paths.txt
+          python3 - <<'PY'
+          from pathlib import Path
+
+          paths = [line for line in Path('/tmp/changed-paths.txt').read_text().splitlines() if line]
+          assert paths, 'Grain H change surface must not be empty'
+          for path in paths:
+              allowed = path.startswith('tools/provenance/') or path.startswith('provenance/fixtures/')
+              assert allowed, f'out-of-authority Grain H path: {path}'
+              assert not path.startswith('.github/workflows/'), path
+              assert not path.startswith('provenance/imports/'), path
+          print(f'CHANGE_SURFACE_OK={len(paths)}')
+          PY
+
+      - name: Prove no upstream product source entered Grain H
+        id: source_boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          paths = [line for line in Path('/tmp/changed-paths.txt').read_text().splitlines() if line]
+          forbidden_roots = ('apps/', 'packages/', 'engine/', 'frontend/', 'app/', 'provenance/imports/')
+          assert not any(path.startswith(forbidden_roots) for path in paths), paths
+          print('NO_UPSTREAM_PRODUCT_SOURCE=PASS')
+          PY
+
+      - name: Prove dependency graph unchanged
+        id: lock
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git -C signthos diff --exit-code "$BASE_SHA..$TARGET_SHA" -- tools/provenance/Cargo.toml tools/provenance/Cargo.lock
+          cd signthos/tools/provenance
+          cargo metadata --locked --format-version 1 > /tmp/metadata.json
+          cargo tree --locked > /tmp/tree.txt
+
+      - name: Reconcile lockfile and component registry
+        id: reconcile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import tomllib
+          from pathlib import Path
+
+          root = Path('signthos')
+          lock = tomllib.loads((root / 'tools/provenance/Cargo.lock').read_text())
+          registry = json.loads((root / 'provenance/components/registry.json').read_text())
+          metadata = json.loads(Path('/tmp/metadata.json').read_text())
+          external = {(p['name'], p['version']) for p in lock['package'] if p.get('source', '').startswith('registry+')}
+          components = {(c['name'], c['version']) for c in registry['components'] if c.get('ecosystem') == 'cargo'}
+          metadata_external = {(p['name'], p['version']) for p in metadata['packages'] if (p.get('source') or '').startswith('registry+')}
+          assert external == components == metadata_external, (external, components, metadata_external)
+          print(f'COMPONENT_RECONCILIATION_OK={len(external)}')
+          PY
+
+      - name: Rustfmt exact-head gate
+        id: fmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo fmt --check
+          git diff --exit-code -- Cargo.toml Cargo.lock src tests
+
+      - name: Strict Clippy exact-head gate
+        id: clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Focused Grain H tests
+        id: focused
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo test --locked --test verify_source
+          cargo test --locked --test cli
+          cargo test --locked --test notice
+          cargo test --locked --test regressions
+          cargo test --locked --test fixtures
+          cargo test --locked --lib sha256
+          cargo test --locked --lib verify_source
+
+      - name: Canonical NOTICE remains byte-current
+        id: notice
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos
+          cargo run --manifest-path tools/provenance/Cargo.toml --locked -- notice > /tmp/notice.generated
+          cmp NOTICE /tmp/notice.generated
+          cargo run --manifest-path tools/provenance/Cargo.toml --locked -- notice --check
+
+      - name: Complete Cargo tests
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo test --all-targets --all-features --locked
+
+      - name: Documentation tests
+        id: doctests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo test --doc --locked
+
+      - name: Locked offline verification
+        id: offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd signthos/tools/provenance
+          cargo test --locked --offline
+
+      - name: Assemble evidence
+        if: always()
+        id: evidence
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          printf 'target_sha=%s\nbase_sha=%s\nharness_sha=%s\nrun_id=%s\n' \
+            "$TARGET_SHA" "$BASE_SHA" "$GITHUB_SHA" "$GITHUB_RUN_ID" > evidence/environment.txt
+          rustc --version >> evidence/environment.txt 2>&1 || true
+          cargo --version >> evidence/environment.txt 2>&1 || true
+          rustfmt --version >> evidence/environment.txt 2>&1 || true
+          cargo clippy --version >> evidence/environment.txt 2>&1 || true
+          cp /tmp/changed-paths.txt evidence/changed-paths.txt 2>/dev/null || true
+          cp /tmp/metadata.json evidence/metadata.json 2>/dev/null || true
+          cp /tmp/tree.txt evidence/tree.txt 2>/dev/null || true
+          cp signthos/tools/provenance/src/verify_source.rs evidence/verify_source.exact.rs 2>/dev/null || true
+          cp signthos/tools/provenance/src/sha256.rs evidence/sha256.exact.rs 2>/dev/null || true
+          cp signthos/tools/provenance/tests/verify_source.rs evidence/verify_source.exact.test.rs 2>/dev/null || true
+
+      - name: Upload exact-head evidence
+        if: always()
+        id: artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signthos-grain-h-exact-head-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Persist qualification result in Coddev
+        if: always()
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          OUTCOME_TARGET: ${{ steps.target.outcome }}
+          OUTCOME_RUST: ${{ steps.rust.outcome }}
+          OUTCOME_SIGNTHOS: ${{ steps.signthos.outcome }}
+          OUTCOME_SURFACE: ${{ steps.surface.outcome }}
+          OUTCOME_SOURCE_BOUNDARY: ${{ steps.source_boundary.outcome }}
+          OUTCOME_LOCK: ${{ steps.lock.outcome }}
+          OUTCOME_RECONCILE: ${{ steps.reconcile.outcome }}
+          OUTCOME_FMT: ${{ steps.fmt.outcome }}
+          OUTCOME_CLIPPY: ${{ steps.clippy.outcome }}
+          OUTCOME_FOCUSED: ${{ steps.focused.outcome }}
+          OUTCOME_NOTICE: ${{ steps.notice.outcome }}
+          OUTCOME_TESTS: ${{ steps.tests.outcome }}
+          OUTCOME_DOCTESTS: ${{ steps.doctests.outcome }}
+          OUTCOME_OFFLINE: ${{ steps.offline.outcome }}
+          OUTCOME_EVIDENCE: ${{ steps.evidence.outcome }}
+          OUTCOME_ARTIFACT: ${{ steps.artifact.outcome }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -B main origin/main
+          mkdir -p verification
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          names = [
+              'TARGET', 'RUST', 'SIGNTHOS', 'SURFACE', 'SOURCE_BOUNDARY', 'LOCK',
+              'RECONCILE', 'FMT', 'CLIPPY', 'FOCUSED', 'NOTICE', 'TESTS', 'DOCTESTS',
+              'OFFLINE', 'EVIDENCE', 'ARTIFACT'
+          ]
+          outcomes = {name.lower(): os.environ[f'OUTCOME_{name}'] for name in names}
+          required = [
+              'target', 'rust', 'signthos', 'surface', 'source_boundary', 'lock',
+              'reconcile', 'fmt', 'clippy', 'focused', 'notice', 'tests', 'doctests', 'offline'
+          ]
+          qualification = 'PASS' if all(outcomes[name] == 'success' for name in required) else 'FAIL'
+          result = {
+              'schema_version': 1,
+              'kind': 'signthos_grain_h_exact_head_qualification',
+              'qualification': qualification,
+              'target_sha': os.environ['TARGET_SHA'],
+              'base_sha': os.environ['BASE_SHA'],
+              'harness_sha': os.environ['GITHUB_SHA'],
+              'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'outcomes': outcomes,
+          }
+          Path('verification/signthos-grain-h-result.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add verification/signthos-grain-h-result.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "ci: record Signthos Grain H qualification result"
+          git push origin HEAD:main
